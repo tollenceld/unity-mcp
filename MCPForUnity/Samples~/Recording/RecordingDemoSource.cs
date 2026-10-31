@@ -16,8 +16,11 @@ namespace MCPForUnity.Samples.Recording
         public double DurationSeconds => 4;
         public bool CanSeek => true;
         private sealed class Snapshot { public string State; public float Time; public bool Owned; }
+        /// <summary>Snapshot the selected state, time and prior clock owner for reversible recording.</summary>
         public object CaptureState() => new Snapshot { State = State, Time = PlaybackTime, Owned = recorderOwnsClock };
+        /// <summary>Select the requested demo state and suspend automatic ticking while the recorder owns the clock.</summary>
         public void Prepare(string state) { recorderOwnsClock = true; State = string.IsNullOrEmpty(state) ? State : state; Seek(0); }
+        /// <summary>Evaluate the demo card directly at source time without relying on prior rendered frames.</summary>
         public void Seek(double seconds)
         {
             PlaybackTime = (float)seconds;
@@ -29,11 +32,13 @@ namespace MCPForUnity.Samples.Recording
             Card.localRotation = Quaternion.Euler(0, 0, State == "Pulse" ? 12 * Mathf.Sin(PlaybackTime * 3) : 8 * (1 - ease));
         }
         public void Advance(double deltaSeconds) => Seek(PlaybackTime + deltaSeconds);
+        /// <summary>Release ownership and restore the snapshot; null retains the final visual state.</summary>
         public void RestoreState(object snapshot)
         {
             if (snapshot is Snapshot saved) { State = saved.State; Seek(saved.Time); recorderOwnsClock = saved.Owned; }
             else recorderOwnsClock = false;
         }
+        /// <summary>Advance normal demo playback only when no recording job owns its clock.</summary>
         private void Update() { if (Application.isPlaying && !recorderOwnsClock) Advance(UnityEngine.Time.deltaTime); }
     }
 }

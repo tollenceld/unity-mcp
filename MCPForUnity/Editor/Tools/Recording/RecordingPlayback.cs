@@ -22,6 +22,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         public virtual double Duration => 0;
         public virtual bool CanSeek => true;
         public virtual object Info => new { type = "none", can_seek = CanSeek, source_fps = FrameRate, duration_seconds = Duration };
+        /// <summary>Check source-duration and pre-roll bounds before playback ownership is acquired.</summary>
         public virtual void Validate(RecordingPlan plan)
         {
             RecordingPlan.Require(CanSeek || plan.StartTime <= 300, "Non-seekable sources allow at most 300 seconds of pre-roll.");
@@ -32,6 +33,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         public virtual void Sample(double time, double delta) { }
         public virtual void Dispose() { }
 
+        /// <summary>Resolve an explicit source to one live instance and reject ambiguous scene or asset selectors.</summary>
         public static RecordingPlayback Resolve(JObject spec)
         {
             string type = (string)spec?["type"] ?? "none";
@@ -58,9 +60,11 @@ namespace MCPForUnity.Editor.Tools.Recording
             }
         }
 
+        /// <summary>Enumerate loaded scene components while excluding persistent prefab and asset objects.</summary>
         public static IEnumerable<T> SceneComponents<T>() where T : Component =>
             UnityEngine.Resources.FindObjectsOfTypeAll<T>().Where(x => x != null && x.gameObject.scene.IsValid() && !EditorUtility.IsPersistent(x));
 
+        /// <summary>Require one matching component so capture cannot silently choose among duplicate names.</summary>
         public static T ResolveComponent<T>(string key) where T : Component
         {
             RecordingPlan.Require(!string.IsNullOrWhiteSpace(key), "A playback/camera target is required. Use discover to get an instance_id or hierarchy path.");
@@ -69,12 +73,15 @@ namespace MCPForUnity.Editor.Tools.Recording
             return matches[0];
         }
 
+        /// <summary>Accept an explicit component or object ID, or a scene name/path requiring later uniqueness checks.</summary>
         internal static bool Matches(Component c, string key) => c.GetInstanceIDCompat().ToString() == key ||
             c.gameObject.GetInstanceIDCompat().ToString() == key || c.name == key || Path(c.transform) == key;
 
+        /// <summary>Build a hierarchy path used for discovery and human-readable target selection.</summary>
         internal static string Path(Transform t) => t.parent == null ? t.name : Path(t.parent) + "/" + t.name;
         internal static object Identity(Component c) => new { instance_id = c.GetInstanceIDCompat(), name = c.name, path = Path(c.transform), scene = c.gameObject.scene.path };
 
+        /// <summary>Describe available targets, states, source rates and cameras without acquiring playback clocks.</summary>
         public static List<object> Discover(string query)
         {
             var items = new List<object>();
@@ -126,6 +133,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             }
         }
         public override object Info => new { type = "timeline", target = Identity(director), source_fps = FrameRate, duration_seconds = Duration, can_seek = true };
+        /// <summary>Ensure the originally bound Director and Timeline asset still match the prepared plan.</summary>
         public override void Validate(RecordingPlan p)
         {
             RecordingPlan.Require(director != null, "The prepared Timeline target no longer exists. Prepare a new recording.");
@@ -134,6 +142,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             RecordingPlan.Require(director.gameObject.activeInHierarchy, "Timeline target must be active.");
             base.Validate(p);
         }
+        /// <summary>Snapshot Director timing and take exclusive ownership of its manual evaluation clock.</summary>
         public override void Begin(RecordingPlan plan)
         {
             originalTime = director.time; originalState = director.state; originalMode = director.timeUpdateMode; restore = plan.RestoreState;
@@ -141,6 +150,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             director.Pause();
         }
         public override void Sample(double time, double delta) { director.time = time; director.Evaluate(); }
+        /// <summary>Release the Director clock and optionally restore its source time and playing state.</summary>
         public override void Dispose()
         {
             if (director == null) return;
@@ -170,6 +180,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         public override string TargetId => target.transform.GetInstanceIDCompat().ToString();
         public override double Duration => clip.length;
         public override double FrameRate => clip.frameRate;
+        /// <summary>Require a live bound clip/target and a reversible sampling mode before altering the Animator.</summary>
         public override void Validate(RecordingPlan p)
         {
             RecordingPlan.Require(target != null && clip != null,
@@ -180,6 +191,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             RecordingPlan.Require(p.RestoreState, "AnimationClip sampling requires restore_state=true to leave Edit Mode properties intact.");
             RecordingPlan.Require(!Application.isPlaying || !clip.legacy, "Legacy clips are supported in Edit Mode only.");
         }
+        /// <summary>Capture animated properties and isolate a manual clip graph from the normal Animator controller.</summary>
         public override void Begin(RecordingPlan plan)
         {
             if (!Application.isPlaying) { AnimationMode.StartAnimationMode(); animationMode = true; return; }
@@ -230,6 +242,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             graph.Play();
             graph.Evaluate(0);
         }
+        /// <summary>Evaluate the clip at absolute source time through reversible Edit Mode preview or a manual graph.</summary>
         public override void Sample(double time, double delta)
         {
             if (animationMode)
@@ -240,6 +253,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             }
             else { playable.SetTime(time); graph.Evaluate(0); }
         }
+        /// <summary>Destroy temporary playback graphs and restore captured properties and Animator settings.</summary>
         public override void Dispose()
         {
             if (graph.IsValid()) graph.Destroy();
@@ -274,6 +288,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         private bool enabled;
         private bool restore;
         private bool begun;
+        /// <summary>Bind one state path and retain the controller and motion identities used for preparation.</summary>
         public AnimatorPlayback(Animator value, JObject options)
         {
             animator = value; spec = (JObject)options.DeepClone(); controller = value.runtimeAnimatorController;
@@ -287,6 +302,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         public override string TargetId => animator.GetInstanceIDCompat().ToString();
         public override double FrameRate => ResolveClip(animator, selected.Value.motion)?.frameRate ?? 0;
         // State transitions/loops can run beyond a single clip; do not impose clip duration here.
+        /// <summary>Reject replaced state resources and validate restorable parameters on the selected layer.</summary>
         public override void Validate(RecordingPlan p)
         {
             RecordingPlan.Require(animator != null, "The prepared Animator target no longer exists. Prepare a new recording.");
@@ -309,6 +325,7 @@ namespace MCPForUnity.Editor.Tools.Recording
                     else RecordingPlan.Require(RecordingPlan.Finite(property.Value.Value<double>()), "Animator float parameters must be finite.");
                 }
         }
+        /// <summary>Snapshot parameters and layer states, select the source offset, and suppress automatic Animator advancement.</summary>
         public override void Begin(RecordingPlan plan)
         {
             restore = plan.RestoreState; speed = animator.speed; enabled = animator.enabled; culling = animator.cullingMode;
@@ -330,12 +347,14 @@ namespace MCPForUnity.Editor.Tools.Recording
             animator.Play(selected.Key, layer, length > 0 ? (float)(plan.StartTime / length) : 0); animator.Update(0);
             animator.speed = 0;
         }
+        /// <summary>Advance the selected Animator manually, then return its clock to the recorder-owned paused state.</summary>
         public override void Sample(double time, double delta)
         {
             animator.speed = 1;
             try { animator.Update((float)delta); }
             finally { animator.speed = 0; }
         }
+        /// <summary>Apply a validated bool, int or float parameter using its declared Animator type.</summary>
         private void SetParameter(string key, object value)
         {
             var p = animator.parameters.First(x => x.name == key);
@@ -343,6 +362,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             if (p.type == AnimatorControllerParameterType.Int) animator.SetInteger(key, Convert.ToInt32(value));
             if (p.type == AnimatorControllerParameterType.Bool) animator.SetBool(key, Convert.ToBoolean(value));
         }
+        /// <summary>Restore captured Animator state when requested and always release playback settings.</summary>
         public override void Dispose()
         {
             if (!begun || animator == null) return;
@@ -354,6 +374,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             }
             animator.speed = speed; animator.enabled = enabled; animator.cullingMode = culling;
         }
+        /// <summary>Resolve a direct state clip through any AnimatorOverrideController before inferring its source rate.</summary>
         public static AnimationClip ResolveClip(Animator animator, Motion motion)
         {
             var clip = motion as AnimationClip;
@@ -361,6 +382,7 @@ namespace MCPForUnity.Editor.Tools.Recording
                 return overrides[clip] ?? clip;
             return clip;
         }
+        /// <summary>Enumerate full state paths across controller layers, including override controllers.</summary>
         public static IEnumerable<KeyValuePair<string, AnimatorState>> States(Animator a)
         {
             RuntimeAnimatorController runtime = a.runtimeAnimatorController;
@@ -370,6 +392,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             foreach (var layer in controller.layers)
                 foreach (var state in Walk(layer.stateMachine, layer.name + ".")) yield return state;
         }
+        /// <summary>Walk nested state machines while retaining their full layer-qualified paths.</summary>
         private static IEnumerable<KeyValuePair<string, AnimatorState>> Walk(AnimatorStateMachine machine, string prefix)
         {
             foreach (var s in machine.states) yield return new KeyValuePair<string, AnimatorState>(prefix + s.state.name, s.state);
@@ -393,17 +416,21 @@ namespace MCPForUnity.Editor.Tools.Recording
         public override double Duration => source.DurationSeconds;
         public override double FrameRate => source.FrameRate;
         public override bool CanSeek => source.CanSeek;
+        /// <summary>Require the original adapter component and a declared state before acquiring its clock.</summary>
         public override void Validate(RecordingPlan p)
         {
             RecordingPlan.Require(component != null, "The prepared custom playback source no longer exists. Prepare a new recording.");
             base.Validate(p);
             RecordingPlan.Require(string.IsNullOrEmpty(state) || (source.States ?? new string[0]).Contains(state), "Unknown custom playback state. Use discover to list available states.");
         }
+        /// <summary>Capture the project adapter snapshot before asking it to select and reset a state.</summary>
         public override void Begin(RecordingPlan plan)
         {
             snapshot = source.CaptureState(); restore = plan.RestoreState; begun = true; source.Prepare(state);
         }
+        /// <summary>Seek directly when supported; otherwise advance the adapter by the supplied source-time delta.</summary>
         public override void Sample(double time, double delta) { if (source.CanSeek) source.Seek(time); else source.Advance(delta); }
+        /// <summary>Release adapter ownership, passing null only when the caller keeps the final state.</summary>
         public override void Dispose() { if (begun) source.RestoreState(restore ? snapshot : null); }
     }
 
@@ -418,6 +445,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         private bool wasPlaying;
         private bool begun;
         private bool restore;
+        /// <summary>Bind exactly one live root tween or sequence carrying the requested explicit string ID.</summary>
         public DotweenPlayback(string id)
         {
             RecordingPlan.Require(Available, "DOTween is not installed. Install it separately or use a custom playback adapter.");
@@ -427,6 +455,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             tween = values[0];
             tweenId = id;
         }
+        /// <summary>Resolve the installed DOTween extension signature without adding a compile-time dependency.</summary>
         private object Invoke(string name, params object[] args)
         {
             var method = Extensions.GetMethods(BindingFlags.Public | BindingFlags.Static)
@@ -440,6 +469,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         {
             get { double value = Convert.ToDouble(Invoke("Duration", true)); return value > 0 && RecordingPlan.Finite(value) ? value : 0; }
         }
+        /// <summary>Reject a killed or replaced tween even when a new instance reuses its string ID.</summary>
         public override void Validate(RecordingPlan p)
         {
             var matches = QueryTweens(tweenId);
@@ -447,18 +477,21 @@ namespace MCPForUnity.Editor.Tools.Recording
                 "The prepared DOTween target no longer exists or its ID changed. Prepare a new recording.");
             base.Validate(p);
         }
+        /// <summary>Snapshot tween time and playing state before pausing its automatic clock.</summary>
         public override void Begin(RecordingPlan p)
         {
             originalTime = Convert.ToDouble(Invoke("Elapsed", true)); wasPlaying = Convert.ToBoolean(Invoke("IsPlaying")); restore = p.RestoreState; begun = true;
             Invoke("Pause");
         }
         public override void Sample(double time, double delta) { Invoke("Goto", (float)time, false); }
+        /// <summary>Optionally restore tween time and always release the original playing/paused state.</summary>
         public override void Dispose()
         {
             if (!begun) return;
             if (restore) Invoke("Goto", (float)originalTime, false);
             if (wasPlaying) Invoke("Play"); else Invoke("Pause");
         }
+        /// <summary>Query live root tweens across DOTween versions with two- or three-argument lookup overloads.</summary>
         private static IList QueryTweens(string id)
         {
             // DOTween added an optional fillableList argument in newer releases.
@@ -470,6 +503,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             if (method == null) throw new NotSupportedException("This DOTween version lacks TweensById.");
             return method.Invoke(null, method.GetParameters().Length == 2 ? new object[] { id, false } : new object[] { id, false, null }) as IList;
         }
+        /// <summary>Resolve only explicitly queried tween IDs and report ambiguity without traversing unrelated tweens.</summary>
         public static IEnumerable<object> DiscoverTweens(string query)
         {
             if (!Available || !Application.isPlaying) yield break;

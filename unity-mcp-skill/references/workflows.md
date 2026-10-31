@@ -2119,7 +2119,9 @@ FPS, state names and duration before planning. Do not infer source FPS from the 
 
 Translate “from source frame 30, record 3 seconds at 1080p/60 FPS” into `start_frame=30`,
 `duration_seconds=3`, `width=1920`, `height=1080`, `fps=60`, plus the discovered `playback` target.
-Call `prepare`, inspect its resolved plan, and `start` that recording ID. Poll `status` until `ready=true`.
+Call `prepare`, inspect its resolved plan, and `start` that recording ID. Poll `status` until the job reaches
+a terminal state: `completed`, `failed`, `cancelled`, or `interrupted`. Use the artifact only when `ready=true`;
+otherwise report the job's `error` when present. Do not keep polling a terminal job that is not ready.
 All frame indices are zero based; an `end_frame` is exclusive. Clarify user conventions when ambiguous.
 
 For runtime UI including Overlay canvases, enter Play Mode and use `capture_source="game_view"`.

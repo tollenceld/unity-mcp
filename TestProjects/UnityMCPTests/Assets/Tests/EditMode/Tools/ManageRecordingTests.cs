@@ -43,6 +43,7 @@ namespace MCPForUnityTests.Editor.Tools
             camera = target.AddComponent<Camera>();
             camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = Color.blue; camera.cullingMask = 0;
         }
+        /// <summary>Cancel fixture-owned jobs before deleting their source objects and generated artifacts.</summary>
         [TearDown]
         public void TearDown()
         {
@@ -68,10 +69,31 @@ namespace MCPForUnityTests.Editor.Tools
         [TestCase("Assets/Recordings")]
         [TestCase("Packages/Recordings")]
         [TestCase("ProjectSettings/Recordings")]
+        [TestCase("assets/Recordings")]
+        [TestCase("ASSETS")]
+        [TestCase("aSsEtS/Recordings")]
+        [TestCase("packages/Recordings")]
+        [TestCase("PACKAGES")]
+        [TestCase("pAcKaGeS/Recordings")]
+        [TestCase("projectsettings/Recordings")]
+        [TestCase("PROJECTSETTINGS")]
+        [TestCase("pRoJeCtSeTtInGs/Recordings")]
         public void RejectsUnsafeOutputLocations(string path)
         {
             var spec = Spec(); spec["output_folder"] = path;
             Assert.That(Call(spec).Value<bool>("success"), Is.False);
+        }
+
+        [TestCase("AssetsExport")]
+        [TestCase("packages-backup")]
+        [TestCase("projectsettings-copy")]
+        public void ProtectedFolderCheckDoesNotRejectUnrelatedFolderNames(string path)
+        {
+            path += "_" + Guid.NewGuid().ToString("N");
+            var spec = Spec(); spec["output_folder"] = path;
+            var plan = RecordingPlan.Parse(spec);
+            Assert.That(Path.GetDirectoryName(plan.OutputPath), Is.EqualTo(Path.GetFullPath(Path.Combine(Application.dataPath, "..", path))));
+            Assert.That(Directory.Exists(Path.GetDirectoryName(plan.OutputPath)), Is.False, "Parsing must not create output folders.");
         }
         [Test]
         public void SourceAndOutputFpsAreIndependentAndEndFrameIsExclusive()
@@ -102,6 +124,7 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That(Directory.Exists(Path.Combine(Application.dataPath, "..", folder)), Is.False);
             Assert.That((string)Status(id)["data"]["state"], Is.EqualTo("prepared"));
         }
+        /// <summary>A duplicate scene name must never cause capture to pick an arbitrary camera.</summary>
         [Test]
         public void AmbiguousNamesReturnAnErrorInsteadOfChoosingAnObject()
         {
@@ -126,6 +149,7 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That(result.ToString(), Does.Contain("Open").And.Contain("source_fps"));
         }
 
+        /// <summary>Exercise admission failure and slot reuse while retaining the oldest unfinished plan.</summary>
         [Test]
         public void FullCapacityPreservesPreparedJobsAndRejectsAdditionalPlans()
         {
@@ -143,6 +167,7 @@ namespace MCPForUnityTests.Editor.Tools
             Track(Call(Spec()));
         }
 
+        /// <summary>History pressure must preserve both cancellation access and retry-key identity.</summary>
         [Test]
         public void ActiveJobCanBeCancelledAndRetriedAtFullCapacity()
         {
@@ -160,6 +185,7 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That((string)Call(spec)["data"]["state"], Is.EqualTo("cancelled"), "Retry must not create another recorder.");
         }
 
+        /// <summary>A full job table must still finalize an active capture into a usable early-stop artifact.</summary>
         [UnityTest]
         public IEnumerator ActiveJobCanBeStoppedAtFullCapacity()
         {
@@ -176,6 +202,7 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That(stopped["data"].Value<bool>("ready"), Is.True);
         }
 
+        /// <summary>Read captured pixels to detect a silent switch to a replacement camera after preparation.</summary>
         [UnityTest]
         public IEnumerator PreparedRecordingKeepsOriginalSourceAndCameraWhenNamesAreReused()
         {
@@ -216,6 +243,7 @@ namespace MCPForUnityTests.Editor.Tools
             finally { UObject.DestroyImmediate(replacement); }
         }
 
+        /// <summary>Destroyed bindings must fail without artifacts, including when the output directory already exists.</summary>
         [TestCase("camera", false)]
         [TestCase("custom", false)]
         [TestCase("camera", true)]
@@ -239,6 +267,7 @@ namespace MCPForUnityTests.Editor.Tools
             else Assert.That(Directory.Exists(absolute), Is.False);
         }
 
+        /// <summary>Reusing an asset path must not replace the clip instance held by an existing plan.</summary>
         [Test]
         public void ReplacingTheClipAtAPreparedAssetPathDoesNotRetargetPlayback()
         {
@@ -262,6 +291,7 @@ namespace MCPForUnityTests.Editor.Tools
             finally { AssetDatabase.DeleteAsset(path); }
         }
 
+        /// <summary>A prepared source-time plan cannot silently adopt another Timeline asset.</summary>
         [Test]
         public void ReplacingAPreparedTimelineAssetRequiresANewPlan()
         {
@@ -281,6 +311,7 @@ namespace MCPForUnityTests.Editor.Tools
             }
             finally { UObject.DestroyImmediate(original); UObject.DestroyImmediate(replacement); }
         }
+        /// <summary>An imported multi-clip asset requires explicit selection and the selected clip supplies source FPS.</summary>
         [Test]
         public void ClipNameDisambiguatesMultiClipAssetsAndUsesTheirFrameRate()
         {
@@ -300,6 +331,7 @@ namespace MCPForUnityTests.Editor.Tools
             finally { AssetDatabase.DeleteAsset(path); }
         }
 
+        /// <summary>Compare decoded PNG colors across source times and verify retry identity and snapshot restoration.</summary>
         [UnityTest]
         public IEnumerator RecordsExactSourceFramesRestoresStateAndIsIdempotent()
         {
@@ -329,6 +361,7 @@ namespace MCPForUnityTests.Editor.Tools
             }
             finally { UObject.DestroyImmediate(first); UObject.DestroyImmediate(last); }
         }
+        /// <summary>Pre-roll must reach the requested source offset without counting warm-up steps as captured frames.</summary>
         [UnityTest]
         public IEnumerator NonSeekableSourcePrerollsBeforeCapturing()
         {
@@ -358,6 +391,7 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That(source.Prepared, Is.False); Assert.That(source.Time, Is.EqualTo(2));
         }
 
+        /// <summary>Cancellation releases playback ownership while keeping any partial output unusable.</summary>
         [UnityTest]
         public IEnumerator CancelRestoresPlaybackAndKeepsPartialOutputUnready()
         {
@@ -390,9 +424,12 @@ namespace MCPForUnityTests.Editor.Tools
         public double DurationSeconds => 4;
         public bool CanSeek => Seekable;
         public object CaptureState() => Time;
+        /// <summary>Inject a preparation failure after acquiring ownership to exercise rollback.</summary>
         public void Prepare(string state) { Prepared = true; Time = 0; if (FailPrepare) throw new InvalidOperationException("Test preparation failure"); }
+        /// <summary>Encode source time in camera color so captured pixels can verify sampling progression.</summary>
         public void Seek(double time) { Time = time; if (Camera != null) Camera.backgroundColor = new Color((float)(time / 4), 0.1f, 0.3f); }
         public void Advance(double delta) => Seek(Time + delta);
+        /// <summary>Restore the fixture snapshot or retain its last sampled time when ownership is released.</summary>
         public void RestoreState(object snapshot) { Prepared = false; if (snapshot != null) Seek((double)snapshot); }
     }
 }

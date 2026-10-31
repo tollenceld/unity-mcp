@@ -24,6 +24,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         public JObject Playback;
         public bool RestoreState;
 
+        /// <summary>Resolve source-time ranges and output limits without rounding frame counts or creating files.</summary>
         public static RecordingPlan Parse(JObject input, double discoveredFps = 0)
         {
             Require(input["playback"] == null || input["playback"] is JObject, "playback must be an object.");
@@ -71,6 +72,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             return p;
         }
 
+        /// <summary>Expose the resolved specification so clients can inspect timing and bound targets before starting.</summary>
         public object Describe() => new
         {
             capture_source = CaptureSource, camera = Camera, mode = Mode, format = Format,
@@ -80,8 +82,10 @@ namespace MCPForUnity.Editor.Tools.Recording
             resize = "fit_with_letterbox", audio = false, playback = Playback, restore_state = RestoreState,
         };
 
+        /// <summary>Map a zero-based output frame to source seconds; output FPS is independent of source FPS.</summary>
         public double TimeForFrame(int index) => StartTime + (double)index / Fps;
 
+        /// <summary>Reject fractional, non-finite and out-of-range values instead of coercing frame indices.</summary>
         internal static int ReadInt(JObject input, string key, int fallback)
         {
             JToken value = input[key];
@@ -92,6 +96,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             return (int)number;
         }
 
+        /// <summary>Reserve a unique project-relative path outside import roots, traversal and linked ancestors.</summary>
         private static string ResolveOutputPath(JObject input, string format)
         {
             string root = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
@@ -101,7 +106,10 @@ namespace MCPForUnity.Editor.Tools.Recording
             var comparison = Application.platform == RuntimePlatform.WindowsEditor ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             Require(absolute.StartsWith(root + Path.DirectorySeparatorChar, comparison), "output_folder must stay inside the project.");
             string relative = absolute.Substring(root.Length + 1).Replace('\\', '/');
-            Require(!new[] { "Assets", "Packages", "ProjectSettings" }.Any(x => relative.Equals(x, comparison) || relative.StartsWith(x + "/", comparison)),
+            // Package folder names are reserved even on case-insensitive macOS volumes.
+            Require(!new[] { "Assets", "Packages", "ProjectSettings" }.Any(x =>
+                relative.Equals(x, StringComparison.OrdinalIgnoreCase) ||
+                relative.StartsWith(x + "/", StringComparison.OrdinalIgnoreCase)),
                 "Record outside Assets, Packages and ProjectSettings to avoid imports during capture.");
             // Reject links/junctions in existing ancestors before creating any output files.
             for (var dir = new DirectoryInfo(absolute); dir != null && dir.FullName.Length >= root.Length; dir = dir.Parent)
@@ -113,6 +121,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         }
 
         internal static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+        /// <summary>Turn a violated recording contract into a caller-visible validation error.</summary>
         internal static void Require(bool condition, string message)
         {
             if (!condition) throw new ArgumentException(message);

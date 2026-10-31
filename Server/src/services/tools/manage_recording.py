@@ -28,6 +28,7 @@ class RecordingPlaybackSpec(BaseModel):
 
     @model_validator(mode="after")
     def check_target(self) -> "RecordingPlaybackSpec":
+        """Require the selectors needed to resolve the chosen source unambiguously."""
         if self.type in {"timeline", "animation_clip", "animator", "custom"} and not self.target:
             raise ValueError("playback.target is required; resolve an unambiguous target with discover")
         if self.type == "animation_clip" and not self.clip_path:
@@ -40,6 +41,7 @@ class RecordingPlaybackSpec(BaseModel):
 
 
 class RecordingRequest(BaseModel):
+    """Shared MCP/CLI request contract; Unity resolves source-dependent timing and identities."""
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     action: RecordingAction
     recording_id: str | None = None
@@ -66,6 +68,7 @@ class RecordingRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_range(self) -> "RecordingRequest":
+        """Reject conflicting ranges and spec changes to an already prepared recording."""
         if self.action in {"stop", "cancel"} and not self.recording_id:
             raise ValueError("recording_id is required for stop/cancel")
         if self.start_time is not None and self.start_frame is not None:
@@ -88,6 +91,7 @@ class RecordingRequest(BaseModel):
 
 
 def build_recording_params(values: dict[str, Any]) -> dict[str, Any]:
+    """Validate transport parameters and allocate a retry key once before dispatching start."""
     request = RecordingRequest.model_validate(values)
     params = request.model_dump(exclude_none=True)
     if request.action == "start" and not request.request_id:
@@ -100,7 +104,9 @@ def build_recording_params(values: dict[str, Any]) -> dict[str, Any]:
     description=(
         "Record a view while controlling Timeline, AnimationClip, Animator, DOTween or a custom state machine. "
         "Discover targets/source FPS first; resolve ambiguous names. prepare validates without changing playback; "
-        "start returns immediately. Poll status until ready=true; stop finalizes early, cancel preserves partial output. "
+        "start returns immediately. Poll status until state is completed, failed, cancelled or interrupted. "
+        "Use the artifact only when ready=true; otherwise report error when present. "
+        "stop finalizes early, cancel preserves partial output. "
         "Frame indices are zero-based, end_frame is exclusive. source_fps addresses the source; fps is output FPS. "
         "game_view includes Overlay UI and requires unpaused graphical Play Mode. camera/scene_view work in Edit Mode "
         "but exclude Overlay UI/editor gizmos. fixed_step controls the selected source, not deterministic replay of "
@@ -134,6 +140,11 @@ async def manage_recording(
     file_name: Annotated[str | None, "Base name without extension. Unique suffix prevents overwrites."] = None,
     restore_state: Annotated[bool | None, "Restore captured playback state/settings; default true. Cannot undo arbitrary callback side effects."] = None,
 ) -> dict[str, Any]:
+    """Validate a lifecycle action and dispatch it to the client-selected Unity instance.
+
+    Recording jobs return immediately. Clients stop polling on any terminal state and
+    use artifacts only when the returned job explicitly reports ready=true.
+    """
     values = {k: v for k, v in locals().items() if k != "ctx" and v is not None}
     try:
         params = build_recording_params(values)

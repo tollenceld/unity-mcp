@@ -13,6 +13,7 @@ namespace MCPForUnity.Samples.Recording
 {
     public static class RecordingDemoBuilder
     {
+        /// <summary>Create or reopen the isolated additive recording demo without overwriting existing scenes.</summary>
         [MenuItem("Window/MCP for Unity/Create Recording Demo")]
         public static void Create()
         {
@@ -62,6 +63,7 @@ namespace MCPForUnity.Samples.Recording
             var rect = (RectTransform)go.transform; rect.sizeDelta = new Vector2(260, 220); rect.anchoredPosition = new Vector2(x, 0);
             go.GetComponent<Image>().color = color; return rect;
         }
+        /// <summary>Create a demo label with a built-in font fallback for older supported Editors.</summary>
         private static void Label(Transform parent, string text, Vector2 position, int size, Color color)
         {
             var go = new GameObject(text, typeof(RectTransform), typeof(Text)); go.transform.SetParent(parent, false);
@@ -70,6 +72,7 @@ namespace MCPForUnity.Samples.Recording
             catch (ArgumentException) { label.font = UnityEngine.Resources.GetBuiltinResource<Font>("Arial.ttf"); }
             var rect = (RectTransform)go.transform; rect.sizeDelta = new Vector2(1200, 80); rect.anchoredPosition = position;
         }
+        /// <summary>Build the optional Timeline example through reflection without requiring its assembly at compile time.</summary>
         private static void CreateTimeline(GameObject target, AnimationClip clip, string folder)
         {
             Type timelineType = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("UnityEngine.Timeline.TimelineAsset")).FirstOrDefault(t => t != null);

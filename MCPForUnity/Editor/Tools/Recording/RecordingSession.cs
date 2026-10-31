@@ -52,6 +52,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             camera = captureCamera;
         }
 
+        /// <summary>Bind the requested camera once, including the currently active Scene view camera.</summary>
         public static Camera ResolveCamera(RecordingPlan plan)
         {
             if (plan.CaptureSource == "camera") return RecordingPlayback.ResolveComponent<Camera>(plan.Camera);
@@ -62,6 +63,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             return camera;
         }
 
+        /// <summary>Reject unstable Editor states, unsupported capture modes and platform codecs before playback changes.</summary>
         public static void ValidateEnvironment(RecordingPlan plan)
         {
             RecordingPlan.Require(!EditorApplication.isCompiling && !EditorApplication.isUpdating && EditorApplication.isPlayingOrWillChangePlaymode == Application.isPlaying,
@@ -75,6 +77,7 @@ namespace MCPForUnity.Editor.Tools.Recording
                 RecordingPlan.Require(!EditorApplication.isPaused, "Unpause Play Mode before recording.");
         }
 
+        /// <summary>Revalidate bound resources, acquire playback and capture resources, and report failures through cleanup.</summary>
         public void Start()
         {
             try
@@ -114,6 +117,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             catch (Exception ex) { Fail(ex); }
         }
 
+        /// <summary>Drive bounded pre-roll or camera capture, enforcing no-frame and total wall-clock timeouts.</summary>
         public void Tick()
         {
             if (State == "warming_up")
@@ -155,6 +159,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             catch (Exception ex) { Fail(ex); }
         }
 
+        /// <summary>Sample the selected source using the fixed output clock or the elapsed realtime clock.</summary>
         private bool BeforeFrame()
         {
             if (State != "recording") return false;
@@ -166,6 +171,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             return true;
         }
 
+        /// <summary>Encode one sampled image, duplicating realtime frames when needed, then finalize at the frame limit.</summary>
         private void AcceptFrame(Texture2D frame)
         {
             if (State != "recording") return;
@@ -186,6 +192,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             if (Frames >= Plan.FrameCount) Finish("completed");
         }
 
+        /// <summary>Fit pixels into the requested dimensions while preserving the source color-space interpretation.</summary>
         private void Resize(Texture2D frame)
         {
             bool sourceSrgb = GraphicsFormatUtility.IsSRGBFormat(frame.graphicsFormat);
@@ -218,12 +225,14 @@ namespace MCPForUnity.Editor.Tools.Recording
             finally { RenderTexture.active = previous; GL.sRGBWrite = oldSrgb; }
         }
 
+        /// <summary>Record the originating error and release all resources through the terminal failure path.</summary>
         public void Fail(Exception exception)
         {
             Error = exception.GetBaseException().Message;
             Finish("failed");
         }
 
+        /// <summary>Release playback and Editor settings, close the encoder, and publish only successfully finalized output.</summary>
         public void Finish(string finalState, string reason = null)
         {
             if (!Active && State != "prepared") return;
@@ -274,6 +283,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             Changed?.Invoke();
         }
 
+        /// <summary>Persist artifact metadata only after capture initialization has reserved an output path.</summary>
         private void WriteManifest()
         {
             if (temporaryPath == null) return;
@@ -281,6 +291,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             catch (Exception ex) { restoreWarning = "Could not write recording manifest: " + ex.Message; }
         }
 
+        /// <summary>Return progress and terminal readiness; a partial or failed artifact is never marked usable.</summary>
         public object Describe() => new
         {
             recording_id = Id, state = State, ready = State == "completed", created_at = Created.ToString("O"),

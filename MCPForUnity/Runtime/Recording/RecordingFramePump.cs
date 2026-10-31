@@ -13,6 +13,7 @@ namespace MCPForUnity.Runtime.Recording
         public Action<Exception> OnError;
         public bool Running;
 
+        /// <summary>Sample before rendering and capture composited pixels after UI rendering, forwarding failures to the session.</summary>
         private IEnumerator Start()
         {
             var endOfFrame = new WaitForEndOfFrame();

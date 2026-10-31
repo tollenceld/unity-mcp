@@ -5,6 +5,7 @@ namespace MCPForUnity.Samples.Recording
     [CustomEditor(typeof(RecordingDemoSource))]
     public sealed class RecordingDemoSourceEditor : UnityEditor.Editor
     {
+        /// <summary>Show source timing through an IMGUI inspector that remains safe across demo Play Mode restoration.</summary>
         public override void OnInspectorGUI()
         {
             // Keep this sample on IMGUI: the generic UI Toolkit inspector in Unity 2023.2.3

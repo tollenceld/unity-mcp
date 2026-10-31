@@ -49,8 +49,11 @@ namespace MCPForUnity.Editor.Tools.Recording
             };
         }
 
+        /// <summary>Advance the single active job and release the active slot after it reaches a terminal state.</summary>
         private static void Tick() { if (active != null) { active.Tick(); if (!active.Active) active = null; } }
+        /// <summary>Finalize the active encoder before Editor lifecycle changes and persist the interrupted result.</summary>
         private static void Interrupt(string reason) { if (active != null) active.Finish("interrupted", reason); SaveHistory(); }
+        /// <summary>Persist bounded job snapshots and retry keys without invalidating unfinished jobs.</summary>
         private static void SaveHistory()
         {
             foreach (var job in Jobs.Values) History[job.Id] = JObject.FromObject(job.Describe());
@@ -59,6 +62,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             SessionState.SetString(RequestsKey, JObject.FromObject(Requests).ToString(Newtonsoft.Json.Formatting.None));
         }
 
+        /// <summary>Evict the oldest terminal records only; prepared and active IDs remain client-addressable.</summary>
         private static void TrimHistory(int limit)
         {
             // Prepared and running jobs still own a client-visible ID. Only terminal
@@ -75,6 +79,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             }
         }
 
+        /// <summary>Dispatch recording lifecycle actions on the Editor thread and return structured validation errors.</summary>
         public static object HandleCommand(JObject input)
         {
             try
@@ -123,6 +128,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             catch (Exception ex) { return new ErrorResponse(ex.GetBaseException().Message); }
         }
 
+        /// <summary>Validate and bind a source and camera without changing playback or creating capture artifacts.</summary>
         private static object Prepare(JObject input)
         {
             var playback = RecordingPlayback.Resolve(input["playback"] as JObject);
@@ -141,6 +147,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             return new SuccessResponse("Recording prepared without changing playback or creating output files. Start with recording_id.", job.Describe());
         }
 
+        /// <summary>Deduplicate retries, enforce single-recorder ownership, and start the previously bound plan.</summary>
         private static object Start(JObject input)
         {
             string requestId = (string)input["request_id"];
@@ -161,6 +168,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             return active.State == "failed" ? new ErrorResponse(active.Error, active.Describe()) : new SuccessResponse("Recording started. Poll status with recording_id; ready is true only after encoding finishes.", active.Describe());
         }
 
+        /// <summary>Return a live job or its retained snapshot, including the terminal state and artifact readiness.</summary>
         private static object Status(string id)
         {
             if (Jobs.TryGetValue(id, out var job)) return new SuccessResponse("Recording status.", job.Describe());

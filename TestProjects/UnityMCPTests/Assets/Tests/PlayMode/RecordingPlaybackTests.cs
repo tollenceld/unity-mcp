@@ -32,6 +32,7 @@ namespace MCPForUnityTests.PlayMode
         [UnityTest]
         public IEnumerator ReplacingPreparedAnimatorControllerFailsBeforeCapture() => VerifySource("animator", true, true);
 
+        /// <summary>Observe source-frame poses during capture and verify binding validation and Animator restoration.</summary>
         private IEnumerator VerifySource(string type, bool prepareFirst = false, bool replaceController = false)
         {
             string suffix = Guid.NewGuid().ToString("N");
