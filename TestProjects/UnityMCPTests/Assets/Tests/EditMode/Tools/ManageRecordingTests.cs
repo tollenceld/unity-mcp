@@ -3,11 +3,13 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using MCPForUnity.Editor.Tools.Recording;
+using MCPForUnity.Runtime.Helpers;
 using MCPForUnity.Runtime.Recording;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Playables;
 using UnityEngine.TestTools;
 using UObject = UnityEngine.Object;
 
@@ -123,6 +125,162 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That(result.Value<bool>("success"), Is.True);
             Assert.That(result.ToString(), Does.Contain("Open").And.Contain("source_fps"));
         }
+
+        [Test]
+        public void FullCapacityPreservesPreparedJobsAndRejectsAdditionalPlans()
+        {
+            string first = Track(Call(Spec()));
+            for (int i = 1; i < 32; i++) Track(Call(Spec()));
+            var overflow = Call(Spec());
+            if (overflow.Value<bool>("success")) Track(overflow);
+            Assert.That(overflow.Value<bool>("success"), Is.False, "Capacity must not silently invalidate a prepared ID.");
+            Assert.That((string)overflow["error"], Does.Contain("capacity"));
+            Assert.That((string)Status(first)["data"]["state"], Is.EqualTo("prepared"));
+            var started = Call(new JObject { ["action"] = "start", ["recording_id"] = first });
+            Assert.That(started.Value<bool>("success"), Is.True, started.ToString());
+            var cancelled = Call(new JObject { ["action"] = "cancel", ["recording_id"] = first });
+            Assert.That((string)cancelled["data"]["state"], Is.EqualTo("cancelled"));
+            Track(Call(Spec()));
+        }
+
+        [Test]
+        public void ActiveJobCanBeCancelledAndRetriedAtFullCapacity()
+        {
+            var spec = Spec("start"); spec["duration_seconds"] = 60;
+            spec["request_id"] = "capacity-" + Guid.NewGuid().ToString("N");
+            string id = Track(Call(spec));
+            for (int i = 1; i < 32; i++) Track(Call(Spec()));
+            var overflow = Call(Spec());
+            if (overflow.Value<bool>("success")) Track(overflow);
+            Assert.That(overflow.Value<bool>("success"), Is.False);
+            Assert.That((string)Status(id)["data"]["state"], Is.EqualTo("recording"));
+            Assert.That((string)Call(spec)["data"]["recording_id"], Is.EqualTo(id));
+            var cancelled = Call(new JObject { ["action"] = "cancel", ["recording_id"] = id });
+            Assert.That((string)cancelled["data"]["state"], Is.EqualTo("cancelled"));
+            Assert.That((string)Call(spec)["data"]["state"], Is.EqualTo("cancelled"), "Retry must not create another recorder.");
+        }
+
+        [UnityTest]
+        public IEnumerator ActiveJobCanBeStoppedAtFullCapacity()
+        {
+            var spec = Spec("start"); spec["duration_seconds"] = 60;
+            string id = Track(Call(spec));
+            double deadline = EditorApplication.timeSinceStartup + 5;
+            while (Status(id)["data"].Value<int>("encoded_frames") == 0 && EditorApplication.timeSinceStartup < deadline)
+                yield return null;
+            Assert.That(Status(id)["data"].Value<int>("encoded_frames"), Is.GreaterThan(0));
+            for (int i = 1; i < 32; i++) Track(Call(Spec()));
+            var stopped = Call(new JObject { ["action"] = "stop", ["recording_id"] = id });
+            Assert.That((string)stopped["data"]["state"], Is.EqualTo("completed"), stopped.ToString());
+            Assert.That(stopped["data"].Value<bool>("stopped_early"), Is.True);
+            Assert.That(stopped["data"].Value<bool>("ready"), Is.True);
+        }
+
+        [UnityTest]
+        public IEnumerator PreparedRecordingKeepsOriginalSourceAndCameraWhenNamesAreReused()
+        {
+            var source = target.AddComponent<TestRecordingSource>(); source.Time = 2;
+            camera.backgroundColor = Color.green;
+            string name = target.name;
+            var spec = Spec();
+            spec["playback"] = new JObject { ["type"] = "custom", ["target"] = name, ["state"] = "Open" };
+            var prepared = Call(spec); string id = Track(prepared);
+            Assert.That((string)prepared["data"]["plan"]["camera"], Is.EqualTo(camera.GetInstanceIDCompat().ToString()));
+            Assert.That((string)prepared["data"]["plan"]["playback"]["target"], Is.EqualTo(source.GetInstanceIDCompat().ToString()));
+            target.name = name + "_Renamed";
+            var replacement = new GameObject(name);
+            var otherCamera = replacement.AddComponent<Camera>();
+            otherCamera.cullingMask = 0; otherCamera.clearFlags = CameraClearFlags.SolidColor; otherCamera.backgroundColor = Color.blue;
+            var otherSource = replacement.AddComponent<TestRecordingSource>(); otherSource.Time = 3;
+            try
+            {
+                var started = Call(new JObject { ["action"] = "start", ["recording_id"] = id });
+                Assert.That(started.Value<bool>("success"), Is.True, started.ToString());
+                Assert.That(source.Prepared, Is.True); Assert.That(otherSource.Prepared, Is.False);
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                JObject result;
+                do { yield return null; result = Status(id); }
+                while ((string)result["data"]["state"] == "recording" && EditorApplication.timeSinceStartup < deadline);
+                Assert.That((string)result["data"]["state"], Is.EqualTo("completed"), result.ToString());
+                var frame = new Texture2D(2, 2);
+                try
+                {
+                    frame.LoadImage(File.ReadAllBytes(Path.Combine((string)result["data"]["path"], "000000.png")));
+                    Color pixel = frame.GetPixel(32, 32);
+                    Assert.That(pixel.g, Is.GreaterThan(0.8f), "Capture switched to the same-named replacement camera.");
+                    Assert.That(pixel.b, Is.LessThan(0.1f));
+                }
+                finally { UObject.DestroyImmediate(frame); }
+                Assert.That(source.Time, Is.EqualTo(2)); Assert.That(otherSource.Time, Is.EqualTo(3));
+            }
+            finally { UObject.DestroyImmediate(replacement); }
+        }
+
+        [TestCase("camera", false)]
+        [TestCase("custom", false)]
+        [TestCase("camera", true)]
+        [TestCase("custom", true)]
+        public void ReplacingAPreparedComponentFailsBeforeCreatingOutput(string component, bool outputFolderExists)
+        {
+            var source = target.AddComponent<TestRecordingSource>();
+            var spec = Spec(); spec["playback"] = new JObject { ["type"] = "custom", ["target"] = target.name };
+            string id = Track(Call(spec));
+            string absolute = Path.Combine(Application.dataPath, "..", folder);
+            if (outputFolderExists) Directory.CreateDirectory(absolute);
+            if (component == "camera") { UObject.DestroyImmediate(camera); target.AddComponent<Camera>(); }
+            else { UObject.DestroyImmediate(source); source = target.AddComponent<TestRecordingSource>(); }
+            var result = Call(new JObject { ["action"] = "start", ["recording_id"] = id });
+            Assert.That(result.Value<bool>("success"), Is.False, "A same-named component must not replace a prepared binding.");
+            Assert.That((string)result["data"]["state"], Is.EqualTo("failed"));
+            Assert.That(source.Prepared, Is.False);
+            Assert.That(result["data"]["manifest_path"].Type, Is.EqualTo(JTokenType.Null));
+            Assert.That(result["data"]["warning"].Type, Is.EqualTo(JTokenType.Null));
+            if (outputFolderExists) Assert.That(Directory.GetFiles(absolute), Is.Empty);
+            else Assert.That(Directory.Exists(absolute), Is.False);
+        }
+
+        [Test]
+        public void ReplacingTheClipAtAPreparedAssetPathDoesNotRetargetPlayback()
+        {
+            string path = "Assets/RecordingBoundClip_" + Guid.NewGuid().ToString("N") + ".anim";
+            try
+            {
+                var clip = new AnimationClip { frameRate = 30 };
+                clip.SetCurve("", typeof(Transform), "m_LocalPosition.x", AnimationCurve.Linear(0, 0, 4, 4));
+                AssetDatabase.CreateAsset(clip, path);
+                var spec = Spec(); spec["playback"] = new JObject { ["type"] = "animation_clip", ["target"] = target.name, ["clip_path"] = path };
+                string id = Track(Call(spec));
+                AssetDatabase.DeleteAsset(path);
+                var replacement = new AnimationClip { frameRate = 60 };
+                replacement.SetCurve("", typeof(Transform), "m_LocalPosition.x", AnimationCurve.Linear(0, 4, 4, 8));
+                AssetDatabase.CreateAsset(replacement, path);
+                var result = Call(new JObject { ["action"] = "start", ["recording_id"] = id });
+                Assert.That(result.Value<bool>("success"), Is.False, "A new asset at the old path is a different motion source.");
+                Assert.That((string)result["data"]["state"], Is.EqualTo("failed"));
+                Assert.That(Directory.Exists(Path.Combine(Application.dataPath, "..", folder)), Is.False);
+            }
+            finally { AssetDatabase.DeleteAsset(path); }
+        }
+
+        [Test]
+        public void ReplacingAPreparedTimelineAssetRequiresANewPlan()
+        {
+            var director = target.AddComponent<PlayableDirector>();
+            var original = ScriptableObject.CreateInstance<TestRecordingPlayable>();
+            var replacement = ScriptableObject.CreateInstance<TestRecordingPlayable>();
+            try
+            {
+                director.playableAsset = original;
+                var spec = Spec(); spec["playback"] = new JObject { ["type"] = "timeline", ["target"] = target.name };
+                string id = Track(Call(spec));
+                director.playableAsset = replacement;
+                var result = Call(new JObject { ["action"] = "start", ["recording_id"] = id });
+                Assert.That(result.Value<bool>("success"), Is.False);
+                Assert.That((string)result["data"]["state"], Is.EqualTo("failed"));
+                Assert.That(Directory.Exists(Path.Combine(Application.dataPath, "..", folder)), Is.False);
+            }
+            finally { UObject.DestroyImmediate(original); UObject.DestroyImmediate(replacement); }
+        }
         [Test]
         public void ClipNameDisambiguatesMultiClipAssetsAndUsesTheirFrameRate()
         {
@@ -212,6 +370,11 @@ namespace MCPForUnityTests.Editor.Tools
             Assert.That(result["data"].Value<bool>("ready"), Is.False);
             Assert.That(source.Time, Is.EqualTo(2));
         }
+    }
+
+    public sealed class TestRecordingPlayable : PlayableAsset
+    {
+        public override Playable CreatePlayable(PlayableGraph graph, GameObject owner) => Playable.Null;
     }
 
     public sealed class TestRecordingSource : MonoBehaviour, IRecordingPlaybackSource

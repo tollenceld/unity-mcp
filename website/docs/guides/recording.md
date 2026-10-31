@@ -19,6 +19,11 @@ For a request such as “record Intro from frame 30 for three seconds at 1080p a
    Ask for the missing source rate when addressing DOTween or a source without an intrinsic frame rate.
 3. Call `prepare` with the resolved specification. It returns the source time range, expected output frames
    and unique output path without changing playback, entering Play Mode or creating output files.
+   The plan binds the actual source, clip/tween and capture camera. Component targets in the returned plan
+   are canonical instance IDs. Renaming an object or reusing its name does not redirect the recording.
+   If a bound object is destroyed or its selected motion/controller is replaced, `start` fails before
+   creating output files; prepare a new plan for the replacement. Scene View capture keeps the camera
+   selected at preparation even if a different Scene view becomes active.
 4. Call `start` with that `recording_id` only. Playback preparation and capture arming happen inside Unity.
 5. Poll `status` until the job is terminal. Only `ready: true` denotes a successfully finalized artifact.
 
@@ -106,6 +111,10 @@ States are `prepared`, optional `warming_up`, `recording`, `finalizing`, and one
 `failed`, `interrupted`. `stop` finalizes an active recording early; `cancel` leaves partial output unready.
 Repeated `start` on a job ID returns that same job. A start `request_id` also deduplicates transport retries.
 Only one recording runs per Editor. Up to 32 recent jobs survive assembly reloads in Editor SessionState.
+Prepared and active jobs keep their IDs until they finish or are cancelled. Capacity pressure evicts the
+oldest terminal history first. If all 32 slots hold prepared/active jobs, preparing another job returns an
+explicit capacity error; cancel unused prepared jobs to free slots. Active jobs remain queryable, stoppable
+and cancellable, and their retry keys remain valid.
 Reload, Play Mode exit and Editor quit interrupt active recordings and close their encoders.
 
 Files default to `Library/MCPForUnity/Recordings/`. The caller may choose another project-relative folder

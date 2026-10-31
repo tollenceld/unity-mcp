@@ -18,6 +18,7 @@ namespace MCPForUnity.Editor.Tools.Recording
     internal abstract class RecordingPlayback : IDisposable
     {
         public virtual double FrameRate => 0;
+        public virtual string TargetId => null;
         public virtual double Duration => 0;
         public virtual bool CanSeek => true;
         public virtual object Info => new { type = "none", can_seek = CanSeek, source_fps = FrameRate, duration_seconds = Duration };
@@ -107,11 +108,13 @@ namespace MCPForUnity.Editor.Tools.Recording
     internal sealed class TimelinePlayback : RecordingPlayback
     {
         private readonly PlayableDirector director;
+        private readonly PlayableAsset asset;
         private double originalTime;
         private PlayState originalState;
         private DirectorUpdateMode originalMode;
         private bool restore;
-        public TimelinePlayback(PlayableDirector value) { director = value; }
+        public TimelinePlayback(PlayableDirector value) { director = value; asset = value.playableAsset; }
+        public override string TargetId => director.GetInstanceIDCompat().ToString();
         public override double Duration => director.playableAsset == null ? 0 : director.duration;
         public override double FrameRate
         {
@@ -125,7 +128,9 @@ namespace MCPForUnity.Editor.Tools.Recording
         public override object Info => new { type = "timeline", target = Identity(director), source_fps = FrameRate, duration_seconds = Duration, can_seek = true };
         public override void Validate(RecordingPlan p)
         {
+            RecordingPlan.Require(director != null, "The prepared Timeline target no longer exists. Prepare a new recording.");
             RecordingPlan.Require(director.playableAsset != null, "Timeline target has no playable asset.");
+            RecordingPlan.Require(director.playableAsset == asset, "The prepared Timeline asset changed. Prepare a new recording.");
             RecordingPlan.Require(director.gameObject.activeInHierarchy, "Timeline target must be active.");
             base.Validate(p);
         }
@@ -162,10 +167,13 @@ namespace MCPForUnity.Editor.Tools.Recording
         private float originalSpeed;
         private readonly List<Action> restoreProperties = new List<Action>();
         public ClipPlayback(GameObject go, AnimationClip value) { target = go; clip = value; }
+        public override string TargetId => target.transform.GetInstanceIDCompat().ToString();
         public override double Duration => clip.length;
         public override double FrameRate => clip.frameRate;
         public override void Validate(RecordingPlan p)
         {
+            RecordingPlan.Require(target != null && clip != null,
+                "The prepared AnimationClip or target no longer exists. Prepare a new recording.");
             base.Validate(p);
             RecordingPlan.Require(target.activeInHierarchy, "Clip target must be active.");
             RecordingPlan.Require(!AnimationMode.InAnimationMode(), "Stop the current Animation preview before recording a clip.");
@@ -256,6 +264,9 @@ namespace MCPForUnity.Editor.Tools.Recording
         private readonly Animator animator;
         private readonly JObject spec;
         private readonly KeyValuePair<string, AnimatorState> selected;
+        private readonly RuntimeAnimatorController controller;
+        private readonly Motion motion;
+        private readonly AnimationClip sourceClip;
         private AnimatorStateInfo[] states;
         private Dictionary<string, object> parameters;
         private float speed;
@@ -265,16 +276,24 @@ namespace MCPForUnity.Editor.Tools.Recording
         private bool begun;
         public AnimatorPlayback(Animator value, JObject options)
         {
-            animator = value; spec = options;
+            animator = value; spec = (JObject)options.DeepClone(); controller = value.runtimeAnimatorController;
             string name = (string)spec["state"];
             var matches = States(animator).Where(s => s.Key == name || s.Value.name == name).ToArray();
             RecordingPlan.Require(matches.Length == 1, "Animator state must identify exactly one full state path from discover.");
             selected = matches[0];
+            motion = selected.Value.motion;
+            sourceClip = ResolveClip(animator, motion);
         }
+        public override string TargetId => animator.GetInstanceIDCompat().ToString();
         public override double FrameRate => ResolveClip(animator, selected.Value.motion)?.frameRate ?? 0;
         // State transitions/loops can run beyond a single clip; do not impose clip duration here.
         public override void Validate(RecordingPlan p)
         {
+            RecordingPlan.Require(animator != null, "The prepared Animator target no longer exists. Prepare a new recording.");
+            RecordingPlan.Require(animator.runtimeAnimatorController == controller && selected.Value != null &&
+                selected.Value.motion == motion && ResolveClip(animator, motion) == sourceClip &&
+                States(animator).Any(s => s.Key == selected.Key && s.Value == selected.Value),
+                "The prepared Animator controller, state or motion changed. Prepare a new recording.");
             base.Validate(p);
             RecordingPlan.Require(Application.isPlaying && animator.gameObject.activeInHierarchy, "Animator state playback requires Play Mode and an active target.");
             int layer = RecordingPlan.ReadInt(spec, "layer", 0);
@@ -361,16 +380,22 @@ namespace MCPForUnity.Editor.Tools.Recording
     internal sealed class CustomPlayback : RecordingPlayback
     {
         private readonly IRecordingPlaybackSource source;
+        private readonly MonoBehaviour component;
         private readonly string state;
         private object snapshot;
         private bool begun;
         private bool restore;
-        public CustomPlayback(IRecordingPlaybackSource value, string selectedState) { source = value; state = selectedState; }
+        public CustomPlayback(IRecordingPlaybackSource value, string selectedState)
+        {
+            source = value; component = value as MonoBehaviour; state = selectedState;
+        }
+        public override string TargetId => component.GetInstanceIDCompat().ToString();
         public override double Duration => source.DurationSeconds;
         public override double FrameRate => source.FrameRate;
         public override bool CanSeek => source.CanSeek;
         public override void Validate(RecordingPlan p)
         {
+            RecordingPlan.Require(component != null, "The prepared custom playback source no longer exists. Prepare a new recording.");
             base.Validate(p);
             RecordingPlan.Require(string.IsNullOrEmpty(state) || (source.States ?? new string[0]).Contains(state), "Unknown custom playback state. Use discover to list available states.");
         }
@@ -388,6 +413,7 @@ namespace MCPForUnity.Editor.Tools.Recording
         private static Type Extensions => AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("DG.Tweening.TweenExtensions")).FirstOrDefault(t => t != null);
         public static bool Available => DotweenType != null && Extensions != null;
         private readonly object tween;
+        private readonly string tweenId;
         private double originalTime;
         private bool wasPlaying;
         private bool begun;
@@ -399,6 +425,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             var values = QueryTweens(id);
             RecordingPlan.Require(values != null && values.Count == 1, "tween_id must match exactly one live root Tween or Sequence.");
             tween = values[0];
+            tweenId = id;
         }
         private object Invoke(string name, params object[] args)
         {
@@ -412,6 +439,13 @@ namespace MCPForUnity.Editor.Tools.Recording
         public override double Duration
         {
             get { double value = Convert.ToDouble(Invoke("Duration", true)); return value > 0 && RecordingPlan.Finite(value) ? value : 0; }
+        }
+        public override void Validate(RecordingPlan p)
+        {
+            var matches = QueryTweens(tweenId);
+            RecordingPlan.Require(matches != null && matches.Count == 1 && ReferenceEquals(matches[0], tween),
+                "The prepared DOTween target no longer exists or its ID changed. Prepare a new recording.");
+            base.Validate(p);
         }
         public override void Begin(RecordingPlan p)
         {

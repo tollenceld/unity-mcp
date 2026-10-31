@@ -23,7 +23,16 @@ namespace MCPForUnityTests.PlayMode
         [UnityTest]
         public IEnumerator AnimatorStartsAtSourceFrameAndRestoresSpeed() => VerifySource("animator");
 
-        private IEnumerator VerifySource(string type)
+        [UnityTest]
+        public IEnumerator PreparedClipKeepsOriginalTargetWhenNamesAreReused() => VerifySource("animation_clip", true);
+
+        [UnityTest]
+        public IEnumerator PreparedAnimatorKeepsOriginalTargetWhenNamesAreReused() => VerifySource("animator", true);
+
+        [UnityTest]
+        public IEnumerator ReplacingPreparedAnimatorControllerFailsBeforeCapture() => VerifySource("animator", true, true);
+
+        private IEnumerator VerifySource(string type, bool prepareFirst = false, bool replaceController = false)
         {
             string suffix = Guid.NewGuid().ToString("N");
             string folder = "Assets/RecordingPlayModeTests_" + suffix;
@@ -42,6 +51,7 @@ namespace MCPForUnityTests.PlayMode
             yield return null;
             animator.Update(0);
             string id = null;
+            GameObject replacementTarget = null, replacementCamera = null;
             float originalSpeed = animator.speed;
             try
             {
@@ -50,12 +60,39 @@ namespace MCPForUnityTests.PlayMode
                 else playback["clip_path"] = folder + "/Motion.anim";
                 var response = Call(new JObject
                 {
-                    ["action"] = "start", ["capture_source"] = "camera", ["camera"] = camera.name,
+                    ["action"] = prepareFirst ? "prepare" : "start", ["capture_source"] = "camera", ["camera"] = camera.name,
                     ["playback"] = playback, ["start_frame"] = 30, ["duration_seconds"] = 1,
                     ["fps"] = 10, ["width"] = 32, ["height"] = 32, ["format"] = "png_sequence", ["output_folder"] = output,
                 });
                 Assert.That(response.Value<bool>("success"), Is.True, response.ToString());
                 id = (string)response["data"]["recording_id"];
+                if (prepareFirst)
+                {
+                    replacementTarget = new GameObject(go.name);
+                    go.name += "_Renamed";
+                    replacementTarget.AddComponent<Animator>().runtimeAnimatorController = controller;
+                    replacementCamera = new GameObject(camera.name);
+                    camera.name += "_Renamed";
+                    replacementCamera.AddComponent<Camera>().cullingMask = 0;
+                    RuntimeAnimatorController replacementController = null;
+                    if (replaceController)
+                    {
+                        var next = AnimatorController.CreateAnimatorControllerAtPath(folder + "/Replacement.controller");
+                        var nextState = next.layers[0].stateMachine.AddState("Motion"); nextState.motion = clip;
+                        next.layers[0].stateMachine.defaultState = nextState;
+                        animator.runtimeAnimatorController = replacementController = next;
+                    }
+                    response = Call(new JObject { ["action"] = "start", ["recording_id"] = id });
+                    if (replaceController)
+                    {
+                        Assert.That(response.Value<bool>("success"), Is.False, "A prepared state must not be rebound to another controller.");
+                        Assert.That((string)response["data"]["state"], Is.EqualTo("failed"));
+                        Assert.That(animator.runtimeAnimatorController, Is.SameAs(replacementController));
+                        Assert.That(Directory.Exists(Path.GetFullPath(Path.Combine(Application.dataPath, "..", output))), Is.False);
+                        yield break;
+                    }
+                    Assert.That(response.Value<bool>("success"), Is.True, response.ToString());
+                }
                 int observed = 0;
                 JObject result = response;
                 double deadline = EditorApplication.timeSinceStartup + 20;
@@ -81,6 +118,8 @@ namespace MCPForUnityTests.PlayMode
             {
                 if (id != null) Call(new JObject { ["action"] = "cancel", ["recording_id"] = id });
                 UObject.Destroy(go); UObject.Destroy(camera.gameObject);
+                if (replacementTarget != null) UObject.Destroy(replacementTarget);
+                if (replacementCamera != null) UObject.Destroy(replacementCamera);
                 AssetDatabase.DeleteAsset(folder);
                 string absolute = Path.GetFullPath(Path.Combine(Application.dataPath, "..", output));
                 if (Directory.Exists(absolute)) Directory.Delete(absolute, true);

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using MCPForUnity.Editor.Helpers;
+using MCPForUnity.Runtime.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -53,14 +54,25 @@ namespace MCPForUnity.Editor.Tools.Recording
         private static void SaveHistory()
         {
             foreach (var job in Jobs.Values) History[job.Id] = JObject.FromObject(job.Describe());
-            while (History.Count > MaxJobs)
+            TrimHistory(MaxJobs);
+            SessionState.SetString(HistoryKey, new JArray(History.Values).ToString(Newtonsoft.Json.Formatting.None));
+            SessionState.SetString(RequestsKey, JObject.FromObject(Requests).ToString(Newtonsoft.Json.Formatting.None));
+        }
+
+        private static void TrimHistory(int limit)
+        {
+            // Prepared and running jobs still own a client-visible ID. Only terminal
+            // history may be discarded; otherwise a live recorder could become unreachable.
+            var removable = History
+                .Where(x => !Jobs.TryGetValue(x.Key, out var job) || (!job.Active && job.State != "prepared"))
+                .OrderBy(x => (string)x.Value["created_at"])
+                .Take(Math.Max(0, History.Count - limit))
+                .Select(x => x.Key).ToArray();
+            foreach (string oldest in removable)
             {
-                string oldest = History.OrderBy(x => (string)x.Value["created_at"]).First().Key;
                 History.Remove(oldest); Jobs.Remove(oldest);
                 foreach (string key in Requests.Where(x => x.Value == oldest).Select(x => x.Key).ToArray()) Requests.Remove(key);
             }
-            SessionState.SetString(HistoryKey, new JArray(History.Values).ToString(Newtonsoft.Json.Formatting.None));
-            SessionState.SetString(RequestsKey, JObject.FromObject(Requests).ToString(Newtonsoft.Json.Formatting.None));
         }
 
         public static object HandleCommand(JObject input)
@@ -116,8 +128,15 @@ namespace MCPForUnity.Editor.Tools.Recording
             var playback = RecordingPlayback.Resolve(input["playback"] as JObject);
             var plan = RecordingPlan.Parse(input, playback.FrameRate);
             RecordingSession.ValidateEnvironment(plan);
+            Camera camera = RecordingSession.ResolveCamera(plan);
             playback.Validate(plan);
-            var job = new RecordingSession(plan) { Changed = SaveHistory };
+            if (playback.TargetId != null) plan.Playback["target"] = playback.TargetId;
+            if (camera != null) plan.Camera = camera.GetInstanceIDCompat().ToString();
+            SaveHistory();
+            TrimHistory(MaxJobs - 1);
+            RecordingPlan.Require(History.Count < MaxJobs,
+                "Recording job capacity reached (32 prepared or active jobs). Cancel an unused prepared job before preparing another recording.");
+            var job = new RecordingSession(plan, playback, camera) { Changed = SaveHistory };
             Jobs.Add(job.Id, job); SaveHistory();
             return new SuccessResponse("Recording prepared without changing playback or creating output files. Start with recording_id.", job.Describe());
         }

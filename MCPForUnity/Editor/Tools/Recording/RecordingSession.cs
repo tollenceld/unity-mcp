@@ -25,10 +25,10 @@ namespace MCPForUnity.Editor.Tools.Recording
         public int SourceWidth;
         public int SourceHeight;
         public readonly DateTime Created = DateTime.UtcNow;
-        private RecordingPlayback playback;
+        private readonly RecordingPlayback playback;
         private MediaEncoder encoder;
         private RecordingFramePump pump;
-        private Camera camera;
+        private readonly Camera camera;
         private Texture2D outputTexture;
         private RenderTexture outputTarget;
         private readonly Stopwatch clock = new Stopwatch();
@@ -45,7 +45,22 @@ namespace MCPForUnity.Editor.Tools.Recording
         public Action Changed;
         public bool Active => State == "recording" || State == "warming_up" || State == "finalizing";
 
-        public RecordingSession(RecordingPlan plan) { Plan = plan; }
+        public RecordingSession(RecordingPlan plan, RecordingPlayback source, Camera captureCamera)
+        {
+            Plan = plan;
+            playback = source;
+            camera = captureCamera;
+        }
+
+        public static Camera ResolveCamera(RecordingPlan plan)
+        {
+            if (plan.CaptureSource == "camera") return RecordingPlayback.ResolveComponent<Camera>(plan.Camera);
+            if (plan.CaptureSource != "scene_view") return null;
+            RecordingPlan.Require(SceneView.lastActiveSceneView != null, "Open a Scene view before recording it.");
+            Camera camera = SceneView.lastActiveSceneView.camera;
+            RecordingPlan.Require(camera != null, "The Scene view has no capture camera.");
+            return camera;
+        }
 
         public static void ValidateEnvironment(RecordingPlan plan)
         {
@@ -54,8 +69,6 @@ namespace MCPForUnity.Editor.Tools.Recording
             if (plan.CaptureSource == "game_view")
                 RecordingPlan.Require(Application.isPlaying && !EditorApplication.isPaused && !Application.isBatchMode,
                     "Composited game_view recording requires unpaused Play Mode and a graphical Editor. Use camera or scene_view for Edit Mode.");
-            if (plan.CaptureSource == "camera") RecordingPlayback.ResolveComponent<Camera>(plan.Camera);
-            if (plan.CaptureSource == "scene_view") RecordingPlan.Require(SceneView.lastActiveSceneView != null, "Open a Scene view before recording it.");
             if (Application.platform == RuntimePlatform.LinuxEditor)
                 RecordingPlan.Require(plan.Format != "mp4", "H.264/MP4 is unavailable in the Linux Editor. Choose webm or png_sequence.");
             if (plan.Mode == "fixed_step" && Application.isPlaying)
@@ -67,10 +80,9 @@ namespace MCPForUnity.Editor.Tools.Recording
             try
             {
                 ValidateEnvironment(Plan);
-                playback = RecordingPlayback.Resolve(Plan.Playback);
+                RecordingPlan.Require(Plan.CaptureSource == "game_view" || camera != null,
+                    "The prepared capture camera no longer exists. Prepare a new recording.");
                 playback.Validate(Plan);
-                if (Plan.CaptureSource == "camera") camera = RecordingPlayback.ResolveComponent<Camera>(Plan.Camera);
-                if (Plan.CaptureSource == "scene_view") camera = SceneView.lastActiveSceneView.camera;
                 Directory.CreateDirectory(Path.GetDirectoryName(Plan.OutputPath));
                 temporaryPath = Plan.Format == "png_sequence" ? Plan.OutputPath + ".partial" : Path.Combine(Path.GetDirectoryName(Plan.OutputPath), Path.GetFileNameWithoutExtension(Plan.OutputPath) + ".partial." + Plan.Format);
                 if (Plan.Format == "png_sequence") Directory.CreateDirectory(temporaryPath);
@@ -264,6 +276,7 @@ namespace MCPForUnity.Editor.Tools.Recording
 
         private void WriteManifest()
         {
+            if (temporaryPath == null) return;
             try { File.WriteAllText(Plan.OutputPath + ".json", JObject.FromObject(Describe()).ToString(Formatting.Indented)); }
             catch (Exception ex) { restoreWarning = "Could not write recording manifest: " + ex.Message; }
         }
@@ -275,7 +288,7 @@ namespace MCPForUnity.Editor.Tools.Recording
             duplicated_frames = Math.Max(0, Frames - CapturedFrames), stopped_early = State == "completed" && Frames < Plan.FrameCount, duration_seconds = (double)Frames / Plan.Fps,
             elapsed_seconds = clock.Elapsed.TotalSeconds, progress = (double)Frames / Plan.FrameCount,
             source_width = SourceWidth, source_height = SourceHeight, pre_roll_seconds = warmupTime, path = ArtifactPath,
-            manifest_path = Plan.OutputPath + ".json", error = Error, warning = restoreWarning,
+            manifest_path = temporaryPath == null ? null : Plan.OutputPath + ".json", error = Error, warning = restoreWarning,
         };
     }
 }
